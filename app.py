@@ -4,44 +4,28 @@ from transformers import pipeline
 import pandas as pd
 from rapidfuzz import process, fuzz
 from PIL import Image
-import re
+import random
 
 # ----------------------------
 # Load Nutrition DB
 # ----------------------------
 @st.cache_data
 def load_data():
-    # Load CSV file into a DataFrame
     df = pd.read_csv("indian_food_with_nutrition_v3.csv")
-    
-    # Normalize column names to lowercase and strip spaces
     df.columns = df.columns.str.strip().str.lower()
-    
-    # Ensure food column is named "food" (rename if necessary)
     if "name" in df.columns:
         df.rename(columns={"name": "food"}, inplace=True)
     return df
 
-# Load the nutrition database once
 df = load_data()
 
 # ----------------------------
 # Helper: Nutrition lookup
 # ----------------------------
 def get_food_nutrition(food_name, df, qty=1):
-    """
-    Look up nutrition info for a given food name.
-    Uses fuzzy matching to handle typos and variations.
-    Multiplies values by quantity.
-    """
-    # List of all food names in DB
     choices = df["food"].tolist()
-    
-    # Fuzzy match the input against DB
     match, score, idx = process.extractOne(food_name, choices, scorer=fuzz.WRatio)
-    
-    # Accept only if similarity is above threshold
-    if score > 60:  
+    if score > 60:  # threshold
         row = df.iloc[idx]
         return {
             "food": match,
@@ -57,18 +41,15 @@ def get_food_nutrition(food_name, df, qty=1):
 # Helper: BMI & BMR
 # ----------------------------
 def calculate_bmi(weight, height):
-    # BMI = weight / height^2
     return round(weight / ((height/100)**2), 2)
 
 def calculate_bmr(weight, height, age, gender):
-    # BMR calculation based on Harris–Benedict equations
     if gender == "Male":
         return 88.36 + (13.4 * weight) + (4.8 * height) - (5.7 * age)
     else:
         return 447.6 + (9.2 * weight) + (3.1 * height) - (4.3 * age)
 
 def activity_multiplier(level):
-    # Map activity levels to multipliers
     return {
         "Sedentary": 1.2,
         "Light": 1.375,
@@ -82,7 +63,6 @@ def activity_multiplier(level):
 # ----------------------------
 @st.cache_resource
 def load_model():
-    # Load fine-tuned Hugging Face image classifier
     return pipeline("image-classification", model="NOTGOD6000/finetuned-indian-food")
 
 classifier = load_model()
@@ -92,7 +72,7 @@ classifier = load_model()
 # ----------------------------
 st.title("🍛 Indian Food Calorie Tracker")
 
-# Sidebar: User profile inputs
+# Sidebar: User profile
 st.sidebar.header("User Profile")
 weight = st.sidebar.number_input("Weight (kg)", 40, 150, 70)
 height = st.sidebar.number_input("Height (cm)", 140, 210, 170)
@@ -101,12 +81,10 @@ gender = st.sidebar.radio("Gender", ["Male", "Female"])
 activity = st.sidebar.selectbox("Activity Level",
                                 ["Sedentary", "Light", "Moderate", "Active", "Very Active"])
 
-# Calculate BMI, BMR, and daily calorie needs
 bmi = calculate_bmi(weight, height)
 bmr = calculate_bmr(weight, height, age, gender)
 daily_needs = round(bmr * activity_multiplier(activity), 2)
 
-# Display BMI and calorie needs
 st.sidebar.markdown(f"**BMI:** {bmi}")
 st.sidebar.markdown(f"**Daily Calorie Needs:** {daily_needs} kcal")
 
@@ -115,91 +93,58 @@ st.sidebar.markdown(f"**Daily Calorie Needs:** {daily_needs} kcal")
 # ----------------------------
 tab1, tab2 = st.tabs(["Manual Entry", "Upload Image"])
 
-# Store combined food entries in session state
+# Store combined food entries
 if "food_log" not in st.session_state:
     st.session_state.food_log = []
 
 # --------- Manual Entry ---------
 with tab1:
     st.header("🍲 Manual Food Entry")
-    
-    # User enters a free-text food input
-    food_input = st.text_input("E.g. 2 Chapati and Dal, 1 plate rice + 1 glass milk")
+    food_input = st.text_input("E.g. 2 Chapati and Dal")
     
     if food_input:
-        # Initialize totals
         total_cals, total_protein, total_fat, total_carbs = 0, 0, 0, 0
-        found_items, not_found = [], []
-        
-        # Split by common separators: 'and', ',', '+'
-        items = re.split(r" and |,|\+", food_input.lower())
-        
-        for item in items:
-            item = item.strip()
-            if not item:
-                continue
-            
-            qty = 1  # default quantity
-            
-            # If input starts with a number → treat as qty
-            parts = item.split()
+        found_items = []
+
+        for item in food_input.split(" and "):
+            qty = 1
+            parts = item.strip().split()
             if parts[0].isdigit():
                 qty = int(parts[0])
                 food = " ".join(parts[1:])
             else:
-                food = item
-            
-            # Remove plurals (basic)
-            if food.endswith("s"):
-                food = food[:-1]
-            
-            # Lookup nutrition
+                food = item.strip()
+
             nutrition, score = get_food_nutrition(food, df, qty)
             if nutrition:
-                # Add totals
                 total_cals += nutrition["calories"]
                 total_protein += nutrition["protein"]
                 total_fat += nutrition["fat"]
                 total_carbs += nutrition["carbs"]
-                
-                # Save successful match
                 found_items.append(f"{qty} x {nutrition['food']} ({score:.0f}%)")
                 st.session_state.food_log.append(nutrition)
-            else:
-                # Save failed matches
-                not_found.append(food)
-        
-        # Display results
+
         if found_items:
-            st.subheader("✅ Matched Foods")
+            st.subheader("Matched Foods")
             st.write(", ".join(found_items))
-        
-        if not_found:
-            st.subheader("⚠️ Not Found")
-            st.write(", ".join(not_found))
 
 # --------- Image Upload ---------
 with tab2:
     st.header("📸 Upload Food Image")
-    
-    # Upload image
     uploaded_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
     
     if uploaded_file:
-        # Display uploaded image
         image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded Image", use_column_width=True)
+        st.image(image, caption="Uploaded Image", use_container_width=True)  # FIXED
 
-        # Run classifier
         preds = classifier(image)
-        
-        st.subheader("🔮 Predicted Foods")
+        st.subheader("Predicted Foods")
         for pred in preds[:3]:
             food_name = pred['label']
             score = pred['score'] * 100
             st.write(f"{food_name} ({score:.1f}%)")
             
-            # Only log high-confidence predictions
+            # Add to log if confidence > threshold
             if score > 60:
                 nutrition, _ = get_food_nutrition(food_name, df)
                 if nutrition:
@@ -208,18 +153,18 @@ with tab2:
 # --------- Nutrition Summary ---------
 if st.session_state.food_log:
     st.header("🥗 Today's Food Summary")
-    
-    # Compute totals
     total_cals = sum(item["calories"] for item in st.session_state.food_log)
     total_protein = sum(item["protein"] for item in st.session_state.food_log)
     total_fat = sum(item["fat"] for item in st.session_state.food_log)
     total_carbs = sum(item["carbs"] for item in st.session_state.food_log)
 
-    # Display totals
     st.write(f"**Calories:** {total_cals:.1f} kcal")
     st.write(f"**Protein:** {total_protein:.1f} g")
     st.write(f"**Fat:** {total_fat:.1f} g")
     st.write(f"**Carbs:** {total_carbs:.1f} g")
 
-    # Show progress toward daily needs
-    st.progress(min(int(total_cals / daily_needs * 100), 100))
+    # Show progress toward daily needs safely
+    if daily_needs > 0:
+        st.progress(min(int(total_cals / daily_needs * 100), 100))
+    else:
+        st.warning("Please enter valid profile details in the sidebar to track progress.")
