@@ -1,19 +1,23 @@
-# app.py
+# 🍛 Indian Food Calorie Tracker
+
+import re
 import streamlit as st
-from transformers import pipeline
 import pandas as pd
-from rapidfuzz import process, fuzz
 from PIL import Image
-import random
+from transformers import pipeline
+from rapidfuzz import process, fuzz
+
+# ✅ Set page config
+st.set_page_config(page_title="Indian Food Calorie Tracker", layout="centered")
 
 # ----------------------------
 # Load Nutrition DB
 # ----------------------------
 @st.cache_data
 def load_data():
-    df = pd.read_csv("indian_food_with_nutrition_v3.csv")
+    df = pd.read_csv("indian_food_with_nutrition_v4.csv")
     df.columns = df.columns.str.strip().str.lower()
-    if "name" in df.columns:
+    if "food" not in df.columns and "name" in df.columns:
         df.rename(columns={"name": "food"}, inplace=True)
     return df
 
@@ -29,6 +33,7 @@ def get_food_nutrition(food_name, df, qty=1):
         row = df.iloc[idx]
         return {
             "food": match,
+            "quantity": qty,
             "calories": row.get("calories", 0) * qty,
             "protein": row.get("protein_g", 0) * qty,
             "fat": row.get("fat_g", 0) * qty,
@@ -38,7 +43,7 @@ def get_food_nutrition(food_name, df, qty=1):
         return None, score
 
 # ----------------------------
-# Helper: BMI & BMR
+# BMI & BMR
 # ----------------------------
 def calculate_bmi(weight, height):
     return round(weight / ((height/100)**2), 2)
@@ -68,18 +73,23 @@ def load_model():
 classifier = load_model()
 
 # ----------------------------
-# Streamlit UI
+# Init Session State
 # ----------------------------
-st.title("🍛 Indian Food Calorie Tracker")
+if "food_log" not in st.session_state:
+    st.session_state.food_log = []
 
+# ----------------------------
 # Sidebar: User profile
+# ----------------------------
 st.sidebar.header("User Profile")
 weight = st.sidebar.number_input("Weight (kg)", 40, 150, 70)
 height = st.sidebar.number_input("Height (cm)", 140, 210, 170)
 age = st.sidebar.number_input("Age", 10, 80, 25)
 gender = st.sidebar.radio("Gender", ["Male", "Female"])
-activity = st.sidebar.selectbox("Activity Level",
-                                ["Sedentary", "Light", "Moderate", "Active", "Very Active"])
+activity = st.sidebar.selectbox(
+    "Activity Level",
+    ["Sedentary", "Light", "Moderate", "Active", "Very Active"]
+)
 
 bmi = calculate_bmi(weight, height)
 bmr = calculate_bmr(weight, height, age, gender)
@@ -93,19 +103,12 @@ st.sidebar.markdown(f"**Daily Calorie Needs:** {daily_needs} kcal")
 # ----------------------------
 tab1, tab2 = st.tabs(["Manual Entry", "Upload Image"])
 
-# Store combined food entries
-if "food_log" not in st.session_state:
-    st.session_state.food_log = []
-
 # --------- Manual Entry ---------
 with tab1:
     st.header("🍲 Manual Food Entry")
-    food_input = st.text_input("E.g. 2 Chapati and Dal")
-    
-    if food_input:
-        total_cals, total_protein, total_fat, total_carbs = 0, 0, 0, 0
-        found_items = []
+    food_input = st.text_input("E.g. 2 Chapati and 1 Dal")
 
+    if food_input:
         for item in food_input.split(" and "):
             qty = 1
             parts = item.strip().split()
@@ -117,42 +120,38 @@ with tab1:
 
             nutrition, score = get_food_nutrition(food, df, qty)
             if nutrition:
-                total_cals += nutrition["calories"]
-                total_protein += nutrition["protein"]
-                total_fat += nutrition["fat"]
-                total_carbs += nutrition["carbs"]
-                found_items.append(f"{qty} x {nutrition['food']} ({score:.0f}%)")
-                st.session_state.food_log.append(nutrition)
-
-        if found_items:
-            st.subheader("Matched Foods")
-            st.write(", ".join(found_items))
+                st.write(f"{qty} x {nutrition['food']} ({score:.0f}%)")
+                if st.button(f"Add {qty} x {nutrition['food']} to Log", key=f"manual_{food}"):
+                    st.session_state.food_log.append(nutrition)
 
 # --------- Image Upload ---------
 with tab2:
     st.header("📸 Upload Food Image")
     uploaded_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
-    
+
     if uploaded_file:
         image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded Image", use_container_width=True)  # FIXED
+        st.image(image, caption="Uploaded Image", use_column_width=True)
 
         preds = classifier(image)
         st.subheader("Predicted Foods")
-        for pred in preds[:3]:
+        for i, pred in enumerate(preds[:3]):
             food_name = pred['label']
             score = pred['score'] * 100
             st.write(f"{food_name} ({score:.1f}%)")
-            
-            # Add to log if confidence > threshold
+
             if score > 60:
                 nutrition, _ = get_food_nutrition(food_name, df)
                 if nutrition:
-                    st.session_state.food_log.append(nutrition)
+                    if st.button(f"Add {nutrition['food']} to Log", key=f"image_{i}"):
+                        st.session_state.food_log.append(nutrition)
 
-# --------- Nutrition Summary ---------
+# ----------------------------
+# Nutrition Summary & Log
+# ----------------------------
 if st.session_state.food_log:
     st.header("🥗 Today's Food Summary")
+
     total_cals = sum(item["calories"] for item in st.session_state.food_log)
     total_protein = sum(item["protein"] for item in st.session_state.food_log)
     total_fat = sum(item["fat"] for item in st.session_state.food_log)
@@ -163,8 +162,24 @@ if st.session_state.food_log:
     st.write(f"**Fat:** {total_fat:.1f} g")
     st.write(f"**Carbs:** {total_carbs:.1f} g")
 
-    # Show progress toward daily needs safely
-    if daily_needs > 0:
-        st.progress(min(int(total_cals / daily_needs * 100), 100))
-    else:
-        st.warning("Please enter valid profile details in the sidebar to track progress.")
+    # ✅ Progress toward daily needs
+    progress = min(total_cals / daily_needs, 1.0)
+    st.progress(progress)
+
+    # ✅ Show food log as a table
+    st.subheader("Food Log")
+    log_df = pd.DataFrame(st.session_state.food_log)
+    st.dataframe(log_df, use_container_width=True)
+
+    # ✅ Clear log button
+    if st.button("Clear Log"):
+        st.session_state.food_log = []
+        st.success("Food log cleared!")
+
+
+# ----------------------------
+# Disclaimer (always visible)
+# ----------------------------
+st.caption(
+    "⚠️ Disclaimer: Nutrition values are approximate and may vary depending on serving size (e.g., 100g, 1 piece, 1 cup) and preparation method."
+)
